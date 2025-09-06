@@ -1,0 +1,17 @@
+# Trunk.toml
+
+[application]
+name = "ac-pwa"
+default_platform = "web"
+out_dir = "dist"
+asset_dir = "public"
+
+[web.app]
+title = "AC PWA"
+
+# Eliminamos [web.resource]
+
+[serve]
+address = "0.0.0.0"
+port = 8080
+open = true
