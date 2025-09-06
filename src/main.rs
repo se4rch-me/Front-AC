@@ -1,5 +1,8 @@
 use dioxus::prelude::*;
 use futures_util::StreamExt;
+use reqwest::multipart::Part;
+
+// No se necesita un import explícito de FileEngine aquí, se obtiene del evento.
 
 mod model;
 use model::{Conexion, Encuesta};
@@ -22,15 +25,23 @@ const ESTADO_GENERAL_POZO: &[&str] = &["Infiltracion", "Represado", "Con basura"
 // Incrustar el CSS directamente en el binario
 const TAILWIND_CSS: &str = include_str!("../public/css/tailwind.css");
 
-async fn send_survey_request(encuesta: Encuesta) -> Result<(), reqwest::Error> {
+// La función ahora recibe una lista de tuplas (Nombre, Contenido)
+async fn send_survey_request(encuesta: Encuesta, files_content: Vec<(String, Vec<u8>)>) -> Result<(), reqwest::Error> {
     let client = reqwest::Client::new();
-        let url = "http://192.168.128.15:5000/ingestar-encuesta";
+    let url = "http://192.168.128.15:5000/ingestar-encuesta";
     let json_data = serde_json::to_string(&encuesta).expect("No se pudo serializar la encuesta a JSON");
 
     log::info!("Conexión: Intentando enviar a URL: {}", url);
     log::info!("Conexión: JSON de la encuesta: {}", json_data);
 
-    let form = reqwest::multipart::Form::new().text("data", json_data);
+    let mut form = reqwest::multipart::Form::new().text("data", json_data);
+
+    for (file_name, file_bytes) in files_content {
+        log::info!("Adjuntando archivo: {}", file_name);
+        let part = Part::bytes(file_bytes).file_name(file_name);
+        form = form.part("fotos", part);
+    }
+
     client.post(url).multipart(form).send().await?;
     Ok(())
 }
@@ -43,18 +54,19 @@ fn main() {
 #[allow(non_snake_case)]
 fn App() -> Element {
     let mut encuesta = use_signal(Encuesta::default);
-    let send_survey = use_coroutine(|mut rx: UnboundedReceiver<Encuesta>| async move {
-        while let Some(encuesta_data) = rx.next().await {
+    // El estado ahora guarda el contenido de los archivos: una tupla de (nombre, bytes)
+    let uploaded_files_content = use_signal(Vec::<(String, Vec<u8>)>::new);
+
+    let send_survey = use_coroutine(|mut rx: UnboundedReceiver<(Encuesta, Vec<(String, Vec<u8>)>)>| async move {
+        while let Some((encuesta_data, files)) = rx.next().await {
             log::info!("Enviando encuesta...");
-            match send_survey_request(encuesta_data).await {
+            match send_survey_request(encuesta_data, files).await {
                 Ok(_) => log::info!("¡Encuesta enviada con éxito!"),
                 Err(e) => log::error!("Error al enviar la encuesta: {:?}", e),
             }
         }
     });
-
     rsx! {
-        // Incrustar el CSS directamente en el HTML
         style { "{TAILWIND_CSS}" }
 
         main {
@@ -78,12 +90,8 @@ fn App() -> Element {
                         prevent_default: "onsubmit",
                         onsubmit: move |_| {
                             let current_survey = encuesta.read().clone();
-                            log::info!("Formulario: Encuesta a enviar: {:?}", current_survey);
-                            log::info!("Formulario: Número de conexiones: {}", current_survey.lista_conexiones.len());
-                            for (i, conn) in current_survey.lista_conexiones.iter().enumerate() {
-                                log::info!("Formulario: Conexión {}: {:?}", i, conn);
-                            }
-                            send_survey.send(current_survey);
+                            let files_to_send = uploaded_files_content.read().clone();
+                            send_survey.send((current_survey, files_to_send));
                         },
                         div {
                             class: "space-y-8",
@@ -174,6 +182,52 @@ fn App() -> Element {
                                     "+ Añadir Conexión"
                                 }
                             }
+                            FormFieldSection {
+                                title: "Fotografías".to_string(),
+                                grid_cols: Some(1),
+                                div {
+                                    class: "flex flex-col items-center",
+                                    label {
+                                        class: "w-full max-w-xs text-center bg-gray-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-transform transform hover:scale-105 cursor-pointer",
+                                        r#for: "file-upload",
+                                        "Seleccionar Imágenes"
+                                    }
+                                    input {
+                                        id: "file-upload",
+                                        r#type: "file",
+                                        multiple: true,
+                                        accept: "image/*",
+                                        class: "hidden",
+                                        // Lógica corregida basada en el ejemplo funcional
+                                        onchange: move |evt| {
+                                            let mut uploaded_files_content = uploaded_files_content.to_owned();
+                                            async move {
+                                                if let Some(file_engine) = evt.files() {
+                                                    let files = file_engine.files();
+                                                    let mut new_files_content = Vec::new();
+                                                    for file_name in &files {
+                                                        if let Some(contents) = file_engine.read_file(file_name).await {
+                                                            new_files_content.push((file_name.clone(), contents));
+                                                        }
+                                                    }
+                                                    uploaded_files_content.set(new_files_content);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !uploaded_files_content.read().is_empty() {
+                                        div {
+                                            class: "mt-4 text-sm text-gray-600",
+                                            p { class: "font-semibold mb-2", "Archivos seleccionados:" }
+                                            ul { class: "list-disc list-inside",
+                                                for (file_name, _) in uploaded_files_content.read().iter() {
+                                                    li { key: "{file_name}", "{file_name}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             div {
                                 class: "mt-10 pt-6 border-t",
                                 button {
@@ -188,6 +242,8 @@ fn App() -> Element {
             }
         }
     }
+
+    
 }
 
 #[derive(Props, Clone, PartialEq)]
