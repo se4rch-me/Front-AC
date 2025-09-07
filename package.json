@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "npm run watch:css & trunk serve",
+    "start": "npm run build:css && npm run watch:css & trunk serve",
     "build:css": "npx tailwindcss -i ./input.css -o ./public/css/tailwind.css",
     "watch:css": "npx tailwindcss -i ./input.css -o ./public/css/tailwind.css --watch"
   },
